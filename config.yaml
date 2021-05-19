@@ -1,0 +1,48 @@
+VERSION: 0.1
+model:
+  fp16: False
+  fp16_opt_level: 'O1'
+  gpus: '2 3'
+  n_gpu: 4
+  device: 'cuda:2'
+  BERT: '/source/d0/embedding/transformer_based/bert_base_chinese/'
+  continue_training_path: '/source/d0/textSegmentation/save/04-26_09.55_weighted_loss_lr_2e_6_seed_13_best_model/model.pt'
+  continue_training: True
+scheduler:
+  warmup: False
+  use_scheduler: False
+  warmup_prob: 0.1
+  step_between_epoch: True
+  step_between_batch: False
+optimizer:
+  type: 'adamw'
+  lr: 0.000002
+  weight_decay: 0.01
+loss_fn:
+  type: "cross entropy"
+  weight: [1.0, 0.272]
+common:
+  vec_type: 'pooler'
+  pool: False
+datasets:
+  max_length: 200
+  random_split: True
+  train_path: '/source/d0/textSegmentation/data/20201119/demo.txt'
+  eval_path: '/source/d0/textSegmentation/data/20201119/demo.txt'
+  test_path: '/source/d0/textSegmentation/data/20201119/demo.txt'
+  write_random_data: False
+  random_data_path: '/source/d0/textSegmentation/data/20210425_random_data/'
+training:
+  seed: 13
+  do_adv: True
+  do_dp: False
+  adv_target: ['word_embeddings']
+  max_steps: 0
+  gradient_accumulation_steps: 1
+  num_train_epochs: 1
+  model_type: weighted_loss_lr_2e_6_attack_word_embeddings_position_embeddings
+  save_path: /source/d0/textSegmentation/save/
+  batch_size: 32
+  max_grad_norm: 1.0
+  logging_steps: 1
+  log_path: /source/d0/textSegmentation/log/
