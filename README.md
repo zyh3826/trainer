@@ -1,1 +1,1 @@
-# trainer
+本人平时训练时所用的base class
