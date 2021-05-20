@@ -34,6 +34,7 @@ class Trainer:
         self.logger = logger
         self.model: nn.Module = None
         self.loss_fn: nn.Module = None
+        self.best_eval_results = {}
 
     def init_model(self):
         raise NotImplementedError
@@ -195,6 +196,10 @@ class Trainer:
                 torch.cuda.empty_cache()
         lr = self.optimizer.state_dict()['param_groups'][0]['lr']
         self.log(eval_dataloader, loss_item, outputs, labels, global_step, lr)
+        self.logger.info('***** best eval results *****')
+        info = '-'.join(
+                        [f' {key}: {value:.4f} ' for key, value in self.best_eval_results.items()])
+        self.logger.info(info)
         self.predict(test_dataloader)
         self.logger.info('***** Finish training *****')
         self.logger.info('TensorBoardX log at {}'.format(log_dir))
@@ -309,6 +314,7 @@ class Trainer:
         if eval_loss < self.dev_best_loss:
             self.dev_best_loss = eval_loss
             self.save_pretrained()
+            self.best_eval_results = eval_report
         self.writer.add_scalar('loss/train', loss_item, global_step)
         self.writer.add_scalar('loss/eval', eval_loss, global_step)
         self.writer.add_scalar('lr', lr, global_step)
