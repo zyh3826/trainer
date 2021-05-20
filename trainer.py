@@ -108,6 +108,11 @@ class Trainer:
         self.init_model()
         self.create_optimizer(forbidden_layer)
         self.create_loss_fn()
+        if self.args.model.continue_training:
+            if not os.path.exists(self.args.model.continue_training_path):
+                raise FileNotFoundError('continue_training_path not exists')
+            self.logger.info('Loading continue training state_dict...')
+            self.from_pretrained()
         train_dataloader = self.get_train_dataloader()
         eval_dataloader = self.get_eval_dataloader()
         test_dataloader = self.get_test_dataloader()
@@ -303,8 +308,7 @@ class Trainer:
         eval_loss = eval_report['loss']
         if eval_loss < self.dev_best_loss:
             self.dev_best_loss = eval_loss
-            save_path = os.path.join(self.args.training.best_save_path, 'model.pt')
-            self.save_pretrained(save_path)
+            self.save_pretrained()
         self.writer.add_scalar('loss/train', loss_item, global_step)
         self.writer.add_scalar('loss/eval', eval_loss, global_step)
         self.writer.add_scalar('lr', lr, global_step)
@@ -322,14 +326,45 @@ class Trainer:
         self.writer = SummaryWriter(log_dir=log_dir)
         return log_dir
 
-    def save_pretrained(self, save_path: Path):
+    def save_pretrained(self):
+        model_save_path = os.path.join(self.args.training.best_save_path, 'model.pt')
+        optimizer_save_path = os.path.join(self.args.training.best_save_path, 'optimizer.pt')
+        optimizer_dict = {'name': self.args.optimizer.type, 'state_dict': self.optimizer.state_dict()}
+        torch.save(optimizer_dict, optimizer_save_path)
+        if self.args.scheduler.use_scheduler:
+            scheduler_dict = {'name': self.args.scheduler.type, 'state_dict': self.scheduler.state_dict()}
+            scheduler_save_path = os.path.join(self.args.training.best_save_path, 'scheduler.pt')
+            torch.save(scheduler_dict, scheduler_save_path)
         self.model.cpu()
         model_to_save = (
                         self.model.module if hasattr(self.model, 'module') else self.model
                         )  # Take care of distributed/parallel training
-        torch.save(model_to_save.state_dict(), save_path)
-        self.logger.info('***** saving best model to %s *****', save_path)
+        torch.save(model_to_save.state_dict(), model_save_path)
+        self.logger.info('***** Saving best model to %s *****', model_save_path)
         self.model.to(self.args.model.device)
+
+    def from_pretrained(self):
+        model_save_path = os.path.join(self.args.model.continue_training_path, 'model.pt')
+        optimizer_save_path = os.path.join(self.args.model.continue_training_path, 'optimizer.pt')
+        scheduler_save_path = os.path.join(self.args.model.continue_training_path, 'scheduler.pt')
+        self.model.cpu()
+        self.model.load_state_dict(torch.load(model_save_path))
+        self.model.to(self.args.model.device)
+        if os.path.exists(optimizer_save_path):
+            optimizer_dict = torch.load(optimizer_save_path)
+            if self.args.optimizer.type == optimizer_dict.get('name'):
+                self.logger.info('***** Loading optimizer state dict *****')
+                self.optimizer.load_state_dict(optimizer_dict.get('state_dict'))
+            else:
+                self.logger.info('***** Your optimizer is different from the saved *****')
+        if os.path.exists(scheduler_save_path):
+            if self.args.scheduler.use_scheduler:
+                scheduler_dict = torch.load(scheduler_save_path)
+                if self.args.scheduler.type == scheduler_dict.get('name'):
+                    self.logger.info('***** Loading scheduler state dict *****')
+                    self.scheduler.load_state_dict(scheduler_dict.get('state_dict'))
+                else:
+                    self.logger.info('***** Your scheduler is different from the saved *****')
 
     def load_model(self):
         self.model.cpu()
