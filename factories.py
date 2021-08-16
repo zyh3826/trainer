@@ -12,10 +12,11 @@ from transformers import (
 )
 
 from .yaml_config import CfgNode
+from .focal_loss import FocalLoss
 
 
 def loss_fn_factory(config: CfgNode):
-    """ A convenience function that initializes some of the common loss
+    ''' A convenience function that initializes some of the common loss
         functions supported by PyTorch.
 
         Supports:
@@ -40,48 +41,55 @@ def loss_fn_factory(config: CfgNode):
 
         Raises:
             ValueError
-    """
+    '''
     # Get all of the possible arguments we might need
-    ignore_index = config.loss_fn.get("ignore_index", -100)
-    pos_weight = config.loss_fn.get("pos_weight", None)
-    reduce = config.loss_fn.get("reduce", None)
-    reduction = config.loss_fn.get("reduction", "mean")
-    size_average = config.loss_fn.get("size_average", None)
-    weight = config.loss_fn.get("weight", None)
+    gamma = config.loss_fn.get('gamma', 0)
+    alpha = config.loss_fn.get('alpha', None)
+    ignore_index = config.loss_fn.get('ignore_index', -100)
+    pos_weight = config.loss_fn.get('pos_weight', None)
+    reduce = config.loss_fn.get('reduce', None)
+    reduction = config.loss_fn.get('reduction', 'mean')
+    size_average = config.loss_fn.get('size_average', None)
+    weight = config.loss_fn.get('weight', None)
     if weight:
-        weight = torch.FloatTensor(weight)
-    if 'cpu' not in str(config.model.device) and weight:
-        weight = weight.cuda(config.model.device)
-
-    if config.loss_fn.type == "l1":
+        if 'cpu' not in config.model.device:
+            weight = torch.FloatTensor(weight).cuda(config.model.device)
+        else:
+            weight = torch.FloatTensor(weight)
+    if config.loss_fn.type == 'focal loss':
+        return FocalLoss(
+                        gamma=gamma,
+                        alpha=alpha,
+                        size_average=size_average)
+    if config.loss_fn.type == 'l1':
         return nn.L1Loss(
             size_average=size_average, reduce=reduce, reduction=reduction)
-    elif config.loss_fn.type == "mean squared error":
+    elif config.loss_fn.type == 'mean squared error':
         return nn.MSELoss(
             size_average=size_average, reduce=reduce, reduction=reduction)
-    elif config.loss_fn.type == "cross entropy":
+    elif config.loss_fn.type == 'cross entropy':
         return nn.CrossEntropyLoss(
             weight=weight,
             size_average=size_average,
             ignore_index=ignore_index,
             reduce=reduce,
             reduction=reduction)
-    elif config.loss_fn.type == "negative log likelihood":
+    elif config.loss_fn.type == 'negative log likelihood':
         return nn.NLLLoss(
             weight=weight,
             size_average=size_average,
             ignore_index=ignore_index,
             reduce=reduce)
-    elif config.loss_fn.type == "kullback-leibler divergence":
+    elif config.loss_fn.type == 'kullback-leibler divergence':
         return nn.KLDivLoss(
             size_average=size_average, reduce=reduce, reduction=reduction)
-    elif config.loss_fn.type == "binary cross entropy":
+    elif config.loss_fn.type == 'binary cross entropy':
         return nn.BCELoss(
             weight=weight,
             size_average=size_average,
             reduce=reduce,
             reduction=reduction)
-    elif config.loss_fn.type == "binary cross entropy with logits":
+    elif config.loss_fn.type == 'binary cross entropy with logits':
         return nn.BCEWithLogitsLoss(
             weight=None,
             size_average=size_average,
@@ -89,11 +97,11 @@ def loss_fn_factory(config: CfgNode):
             reduction=reduction,
             pos_weight=pos_weight)
     else:
-        raise ValueError("Unrecognized loss_fn type.")
+        raise ValueError('Unrecognized loss_fn type.')
 
 
-def optimizer_factory(config: CfgNode, params):
-    """ A convenience function that initializes some of the common optimizers
+def optimizer_factory(config: CfgNode, optimizer_type, params):
+    ''' A convenience function that initializes some of the common optimizers
         supported by PyTorch.
         Supports:
             - adadelta
@@ -117,68 +125,68 @@ def optimizer_factory(config: CfgNode, params):
         Returns:
             optim: optim.Optimizer
                 An optimizer object
-    """
-    if config.optimizer.type == "adadelta":
+    '''
+    if optimizer_type == 'adadelta':
         return optim.Adadelta(
             params,
-            lr=config.optimizer.get("lr", 1.0),
-            rho=config.optimizer.get("rho", 0.9),
-            eps=config.optimizer.get("eps", 1e-6),
-            weight_decay=config.optimizer.get("weight_decay", 0))
-    elif config.optimizer.type == "adagrad":
+            lr=config.optimizer.get('lr', 1.0),
+            rho=config.optimizer.get('rho', 0.9),
+            eps=config.optimizer.get('eps', 1e-6),
+            weight_decay=config.optimizer.get('weight_decay', 0))
+    elif optimizer_type == 'adagrad':
         return optim.Adagrad(
             params,
-            lr=config.optimizer.get("lr", 0.01),
-            lr_decay=config.optimizer.get("lr_decay", 0),
-            weight_decay=config.optimizer.get("weight_decay", 0),
-            initial_accumulator_value=config.optimizer.get("initial_accumulator_value", 0))
-    elif config.optimizer.type == "adam":
+            lr=config.optimizer.get('lr', 0.01),
+            lr_decay=config.optimizer.get('lr_decay', 0),
+            weight_decay=config.optimizer.get('weight_decay', 0),
+            initial_accumulator_value=config.optimizer.get('initial_accumulator_value', 0))
+    elif optimizer_type == 'adam':
         return optim.Adam(
             params,
-            lr=config.optimizer.get("lr", 0.001),
-            betas=config.optimizer.get("betas", (0.9, 0.999)),
-            eps=config.optimizer.get("eps", 1e-8),
-            weight_decay=config.optimizer.get("weight_decay", 0),
-            amsgrad=config.optimizer.get("amsgrad", False))
-    elif config.optimizer.type == "adamw":
+            lr=config.optimizer.get('lr', 0.001),
+            betas=config.optimizer.get('betas', (0.9, 0.999)),
+            eps=config.optimizer.get('eps', 1e-8),
+            weight_decay=config.optimizer.get('weight_decay', 0),
+            amsgrad=config.optimizer.get('amsgrad', False))
+    elif optimizer_type == 'adamw':
         return AdamW(
             params,
-            lr=config.optimizer.get("lr", 0.001),
-            betas=config.optimizer.get("betas", (0.9, 0.999)),
-            eps=config.optimizer.get("eps", 1e-6),
-            weight_decay=config.optimizer.get("weight_decay", 0),
-            correct_bias=config.optimizer.get("correct_bias", True)
+            lr=config.optimizer.get('lr', 0.001),
+            betas=config.optimizer.get('betas', (0.9, 0.999)),
+            eps=config.optimizer.get('eps', 1e-6),
+            weight_decay=config.optimizer.get('weight_decay', 0),
+            correct_bias=config.optimizer.get('correct_bias', True)
         )
-    elif config.optimizer.type == "adamax":
+    elif optimizer_type == 'adamax':
         return optim.Adamax(
             params,
-            lr=config.optimizer.get("lr", 0.002),
-            betas=config.optimizer.get("betas", (0.9, 0.999)),
-            eps=config.optimizer.get("eps", 1e-8),
-            weight_decay=config.optimizer.get("weight_decay", 0))
-    elif config.optimizer.type == "rmsprop":
+            lr=config.optimizer.get('lr', 0.002),
+            betas=config.optimizer.get('betas', (0.9, 0.999)),
+            eps=config.optimizer.get('eps', 1e-8),
+            weight_decay=config.optimizer.get('weight_decay', 0))
+    elif optimizer_type == 'rmsprop':
         return optim.RMSProp(
             params,
-            lr=config.optimizer.get("lr", 0.01),
-            alpha=config.optimizer.get("alpha", 0.99),
-            eps=config.optimizer.get("eps", 1e-8),
-            weight_decay=config.optimizer.get("weight_decay", 0),
-            momentum=config.optimizer.get("momentum", 0),
-            centered=config.optimizer.get("centered", False))
-    elif config.optimizer.type == "sgd":
+            lr=config.optimizer.get('lr', 0.01),
+            alpha=config.optimizer.get('alpha', 0.99),
+            eps=config.optimizer.get('eps', 1e-8),
+            weight_decay=config.optimizer.get('weight_decay', 0),
+            momentum=config.optimizer.get('momentum', 0),
+            centered=config.optimizer.get('centered', False))
+    elif optimizer_type == 'sgd':
         return optim.SGD(
             params,
-            lr=config.optimizer.get("lr", 0.001),
-            momentum=config.optimizer.get("momentum", 0),
-            dampening=config.optimizer.get("dampening", 0),
-            weight_decay=config.optimizer.get("weight_decay", 0),
-            nesterov=config.optimizer.get("nesterov", False))
+            lr=config.optimizer.get('lr', 0.001),
+            momentum=config.optimizer.get('momentum', 0),
+            dampening=config.optimizer.get('dampening', 0),
+            weight_decay=config.optimizer.get('weight_decay', 0),
+            nesterov=config.optimizer.get('nesterov', False))
     else:
-        raise ValueError("Unrecognized optimizer type.")
+        raise ValueError('Unrecognized optimizer type.')
 
 
 def scheduler_factory(config: CfgNode, optimizer: optim.Optimizer):
-    """ A convenience function that initializes some of the common learning
+    ''' A convenience function that initializes some of the common learning
         rate schedulers supported by PyTorch.
         Supports:
             - step learning rate
@@ -196,32 +204,32 @@ def scheduler_factory(config: CfgNode, optimizer: optim.Optimizer):
         Returns:
             scheduler: optim.lr_scheduler
                 The learning rate scheduler.
-    """
+    '''
     # Get all of the possible arguments we might need
 
-    if config.scheduler.type == "StepLR":
+    if config.scheduler.type == 'StepLR':
         return optim.lr_scheduler.StepLR(
             optimizer,
-            step_size=config.scheduler.get("step_size", 500),
-            gamma=config.scheduler.get("gamma", 0.1),
-            last_epoch=config.scheduler.get("last_epoch", -1))
-    elif config.scheduler.type == "ExponentialLR":
+            step_size=config.scheduler.get('step_size', 500),
+            gamma=config.scheduler.get('gamma', 0.1),
+            last_epoch=config.scheduler.get('last_epoch', -1))
+    elif config.scheduler.type == 'ExponentialLR':
         return optim.lr_scheduler.ExponentialLR(
             optimizer,
-            gamma=config.scheduler.get("gamma", 0.5),
-            last_epoch=config.scheduler.get("last_epoch", -1))
-    elif config.scheduler.type == "plateau":
+            gamma=config.scheduler.get('gamma', 0.5),
+            last_epoch=config.scheduler.get('last_epoch', -1))
+    elif config.scheduler.type == 'plateau':
         return optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode=config.scheduler.get("mode", "min"),
-            factor=config.scheduler.get("factor", 0.1),
-            patience=config.scheduler.get("patience", 10),
-            verbose=config.scheduler.get("verbose", False),
-            threshold=config.scheduler.get("threshold", 1e-4),
-            threshold_mode=config.scheduler.get("threshold_mode", "rel"),
-            cooldown=config.scheduler.get("cooldown", 0),
-            min_lr=config.scheduler.get("min_lr", 0),
-            eps=config.scheduler.get("eps", 1e-8))
+            mode=config.scheduler.get('mode', 'min'),
+            factor=config.scheduler.get('factor', 0.1),
+            patience=config.scheduler.get('patience', 10),
+            verbose=config.scheduler.get('verbose', False),
+            threshold=config.scheduler.get('threshold', 1e-4),
+            threshold_mode=config.scheduler.get('threshold_mode', 'rel'),
+            cooldown=config.scheduler.get('cooldown', 0),
+            min_lr=config.scheduler.get('min_lr', 0),
+            eps=config.scheduler.get('eps', 1e-8))
     elif config.scheduler.type == 'MultiStepLR':
         begin = config.scheduler.get('start', 1000)
         end = config.scheduler.get('end', 10000)
@@ -253,7 +261,7 @@ def scheduler_factory(config: CfgNode, optimizer: optim.Optimizer):
             last_epoch=config.scheduler.get('last_epoch', -1)
             )
     else:
-        raise ValueError("Unrecognized scheduler type")
+        raise ValueError('Unrecognized scheduler type')
 
 
 def scheduler_with_warmup_factory(
@@ -296,17 +304,17 @@ def scheduler_with_warmup_factory(
                                                                 last_epoch=last_epoch,
                                                                 num_cycles=num_cycles)
     else:
-        raise ValueError("Unrecognized scheduler warmup type")
+        raise ValueError('Unrecognized scheduler warmup type')
 
 
 def get_parameter_names(model, forbidden_layer_types):
-    """
+    '''
     Returns the names of the model parameters that are not inside a forbidden layer.
-    """
+    '''
     result = []
     for name, child in model.named_children():
         result += [
-            f"{name}.{n}"
+            f'{name}.{n}'
             for n in get_parameter_names(child, forbidden_layer_types)
             if not isinstance(child, tuple(forbidden_layer_types))
         ]
