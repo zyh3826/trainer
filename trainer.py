@@ -4,6 +4,7 @@ import time
 import random
 from typing import Dict, Tuple
 from pathlib import Path
+from logging import Logger
 
 import torch
 import torch.nn as nn
@@ -25,11 +26,11 @@ from .factories import (
                         scheduler_with_warmup_factory,
                         get_parameter_names
                         )
-from .yaml_config import CfgNode
+from toolFunction.trainer.yaml_config import CfgNode
 
 
 class Trainer:
-    def __init__(self, args: CfgNode, logger) -> None:
+    def __init__(self, args: CfgNode, logger: Logger) -> None:
         self.args = args
         self.logger = logger
         self.model: nn.Module = None
@@ -51,6 +52,9 @@ class Trainer:
     def get_test_dataloader(self):
         raise NotImplementedError
 
+    def shuffle_data_between_epoch(self):
+        raise NotImplementedError
+
     def create_optimizer(self, forbidden_layer):
         self.logger.info('Creating optimizer')
         decay_parameters = get_parameter_names(self.model, forbidden_layer)
@@ -65,7 +69,7 @@ class Trainer:
                     "weight_decay": 0.0,
                 },
             ]
-        self.optimizer = optimizer_factory(self.args, optimizer_grouped_parameters)
+        self.optimizer = optimizer_factory(self.args, self.args.optimizer.type, optimizer_grouped_parameters)
 
     def create_scheduler(
                         self,
@@ -103,6 +107,13 @@ class Trainer:
                  }
         return inputs, labels
 
+    def set_best_save_path(self):
+        lr = self.optimizer.state_dict()['param_groups'][0]['lr']
+        tail = time.strftime('%m-%d_%H.%M', time.localtime()) + '_{}_lr_{}_seed_{}'.format(self.args.training.model_type, lr, self.args.training.seed) + '_best_model'
+        self.args.training.best_save_path = os.path.join(self.args.training.save_path, tail)
+        if not os.path.exists(self.args.training.best_save_path):
+            os.makedirs(self.args.training.best_save_path)
+
     def train(self, forbidden_layer=[nn.LayerNorm]):
         ''' Train the model '''
         self.seed_everything()
@@ -113,7 +124,7 @@ class Trainer:
             if not os.path.exists(self.args.model.continue_training_path):
                 raise FileNotFoundError('continue_training_path not exists')
             self.logger.info('Loading continue training state_dict...')
-            self.from_pretrained()
+            self.from_pretrained(self.args.training.ab_initio)
         train_dataloader = self.get_train_dataloader()
         eval_dataloader = self.get_eval_dataloader()
         test_dataloader = self.get_test_dataloader()
@@ -123,13 +134,7 @@ class Trainer:
             self.args.training.num_train_epochs = self.args.training.max_steps // (len(train_dataloader) // self.args.training.gradient_accumulation_steps) + 1
         else:
             t_total = len(train_dataloader) // self.args.training.gradient_accumulation_steps * self.args.training.num_train_epochs
-
-        # Check if saved optimizer or scheduler states exist
-        lr = self.optimizer.state_dict()['param_groups'][0]['lr']
-        tail = time.strftime('%m-%d_%H.%M', time.localtime()) + '_{}_lr_{}_seed_{}'.format(self.args.training.model_type, lr, self.args.training.seed) + '_best_model'
-        self.args.training.best_save_path = os.path.join(self.args.training.save_path, tail)
-        if not os.path.exists(self.args.training.best_save_path):
-            os.makedirs(self.args.training.best_save_path)
+        self.set_best_save_path()
 
         # fp16
         if self.args.model.fp16:
@@ -194,13 +199,20 @@ class Trainer:
             print('\n')
             if 'cpu' not in str(self.args.model.device):
                 torch.cuda.empty_cache()
+            if self.args.training.shuffle_data_between_epoch:
+                try:
+                    train_dataloader = self.shuffle_data_between_epoch()
+                except NotImplementedError:
+                    self.logger.warn('You are trying to use shuffue_data_between_epoch, but it not implemented, so we skip it')
         lr = self.optimizer.state_dict()['param_groups'][0]['lr']
         self.log(eval_dataloader, loss_item, outputs, labels, global_step, lr)
-        self.logger.info('***** best eval results *****')
+        print('\n')
+        self.logger.info('***** Best eval results *****')
         info = '-'.join(
                         [f' {key}: {value:.4f} ' for key, value in self.best_eval_results.items()])
         self.logger.info(info)
-        self.predict(test_dataloader)
+        if self.args.training.predict:
+            self.predict(test_dataloader)
         self.logger.info('***** Finish training *****')
         self.logger.info('TensorBoardX log at {}'.format(log_dir))
         self.logger.info('Best model save at {}'.format(self.args.training.best_save_path))
@@ -209,7 +221,6 @@ class Trainer:
         inputs, labels = self.get_inputs(batch)
         outputs = self.model(**inputs)
         loss = self.compute_loss(outputs, labels.cuda(self.args.model.device))
-        # model outputs are always tuple in pytorch-transformers (see doc)
         if self.args.model.n_gpu > 1 and self.args.training.do_dp:
             # mean() to average on multi-gpu parallel training
             loss = loss.mean()
@@ -349,28 +360,29 @@ class Trainer:
         self.logger.info('***** Saving best model to %s *****', model_save_path)
         self.model.to(self.args.model.device)
 
-    def from_pretrained(self):
+    def from_pretrained(self, ab_initio: bool):
         model_save_path = os.path.join(self.args.model.continue_training_path, 'model.pt')
         optimizer_save_path = os.path.join(self.args.model.continue_training_path, 'optimizer.pt')
         scheduler_save_path = os.path.join(self.args.model.continue_training_path, 'scheduler.pt')
         self.model.cpu()
         self.model.load_state_dict(torch.load(model_save_path))
         self.model.to(self.args.model.device)
-        if os.path.exists(optimizer_save_path):
-            optimizer_dict = torch.load(optimizer_save_path)
-            if self.args.optimizer.type == optimizer_dict.get('name'):
-                self.logger.info('***** Loading optimizer state dict *****')
-                self.optimizer.load_state_dict(optimizer_dict.get('state_dict'))
-            else:
-                self.logger.info('***** Your optimizer is different from the saved *****')
-        if os.path.exists(scheduler_save_path):
-            if self.args.scheduler.use_scheduler:
-                scheduler_dict = torch.load(scheduler_save_path)
-                if self.args.scheduler.type == scheduler_dict.get('name'):
-                    self.logger.info('***** Loading scheduler state dict *****')
-                    self.scheduler.load_state_dict(scheduler_dict.get('state_dict'))
+        if not ab_initio:
+            if os.path.exists(optimizer_save_path):
+                optimizer_dict = torch.load(optimizer_save_path)
+                if self.args.optimizer.type == optimizer_dict.get('name'):
+                    self.logger.info('***** Loading optimizer state dict *****')
+                    self.optimizer.load_state_dict(optimizer_dict.get('state_dict'))
                 else:
-                    self.logger.info('***** Your scheduler is different from the saved *****')
+                    self.logger.info('***** Your optimizer is different from the saved *****')
+            if os.path.exists(scheduler_save_path):
+                if self.args.scheduler.use_scheduler:
+                    scheduler_dict = torch.load(scheduler_save_path)
+                    if self.args.scheduler.type == scheduler_dict.get('name'):
+                        self.logger.info('***** Loading scheduler state dict *****')
+                        self.scheduler.load_state_dict(scheduler_dict.get('state_dict'))
+                    else:
+                        self.logger.info('***** Your scheduler is different from the saved *****')
 
     def load_model(self):
         self.model.cpu()
@@ -400,8 +412,10 @@ class Trainer:
 
     def metric(self, preds, true, data_type):
         acc = metrics.accuracy_score(true, preds)
-        f1 = metrics.f1_score(true, preds, average='macro')
-        res = {'acc': acc, 'f1': f1}
+        f1 = metrics.f1_score(true, preds, average=self.args.metrics.average)
+        p = metrics.precision_score(true, preds, average=self.args.metrics.average)
+        r = metrics.recall_score(true, preds, average=self.args.metrics.average)
+        res = {'acc': acc, 'f1': f1, 'precision': p, 'recall': r}
         if data_type == 'test':
             report = metrics.classification_report(true, preds, digits=4)
             return (res, report)
@@ -412,11 +426,23 @@ class Trainer:
         return log_dir
 
     def step_Plateau_scheduler(self, outputs: torch.Tensor, labels: torch.Tensor, loss: float):
-        logits = torch.argmax(outputs, dim=1)
-        logits = logits.numpy()
-        labels = labels.numpy()
-        acc = self.metric(logits, labels, data_type='train')[0]['acc']
-        self.scheduler.step(acc)
+        if self.args.scheduler.metric == 'loss':
+            self.scheduler.step(loss)
+        else:
+            logits = torch.argmax(outputs, dim=1)
+            logits = logits.numpy()
+            labels = labels.numpy()
+            m = self.metric(logits, labels, data_type='train')[0]
+            if self.args.scheduler.metric == 'acc':
+                self.scheduler.step(m['acc'])
+            elif self.args.scheduler.metric == 'f1':
+                self.scheduler.step(m['f1'])
+            elif self.args.scheduler.metric == 'precision':
+                self.scheduler.step(m['p'])
+            elif self.args.scheduler.metric == 'recall':
+                self.scheduler.step(m['r'])
+            else:
+                raise TypeError('Plateau LR scheduler has no such type reduce strategy, choose in [{}]'.format(m.keys()))
 
     def step(self, outputs, labels, loss):
         if self.args.scheduler.type == 'plateau':
